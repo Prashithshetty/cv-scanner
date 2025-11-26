@@ -31,22 +31,22 @@ The application follows a modular, layered architecture:
 ```
 ┌─────────────────────────────────────────────────┐
 │          User Interface Layer                   │
-│  ┌──────────────┐      ┌──────────────┐        │
-│  │   CLI Mode   │      │   GUI Mode   │        │
-│  │  (main.py)   │      │   (gui.py)   │        │
-│  └──────────────┘      └──────────────┘        │
+│  ┌──────────────┐      ┌──────────────┐         │
+│  │   CLI Mode   │      │   GUI Mode   │         │
+│  │  (main.py)   │      │   (gui.py)   │         │
+│  └──────────────┘      └──────────────┘         │
 └────────────┬─────────────────┬──────────────────┘
              │                 │
 ┌────────────▼─────────────────▼──────────────────┐
 │        Core Analysis Engine (CVAnalyzer)        │
-│                                                  │
+│                                                 │
 │  • Orchestrates entire analysis workflow        │
 │  • Manages parallel processing                  │
 │  • Coordinates all sub-components               │
 └────────────┬──────────────────────────────┬─────┘
              │                              │
       ┌──────▼───────┐           ┌─────────▼──────┐
-      │              │           │                 │
+      │              │           │                │
 ┌─────▼─────┐  ┌────▼────┐  ┌───▼────┐  ┌────────▼──────┐
 │  PDF      │  │   AI    │  │ Scorer │  │ Config Manager│
 │ Extractor │  │  Model  │  │ Engine │  │               │
@@ -187,18 +187,6 @@ Manages the local Large Language Model (LLM) using the GGUF format.
 ### 3. PDF Text Extractor (`pdf_extractor.py`)
 
 **Class**: `PDFTextExtractor`
-
-Extracts text content from PDF CVs using multiple fallback methods.
-
-#### Extraction Strategy:
-1. **Primary**: Try `pdfplumber` (best for complex layouts)
-2. **Fallback**: Use `PyPDF2` (faster, simpler)
-3. **Auto Mode**: Automatically tries all methods
-
-#### Process:
-```python
-# Extraction flow:
-1. Open PDF file
 2. Iterate through all pages
 3. Extract text per page
 4. Concatenate with page markers
@@ -321,7 +309,7 @@ The application features a modular, component-based GUI built with `customtkinte
    - CV text preview
 
 6. **`ExportDialog`** (`components/export_dialog.py`)
-   - Export format selection (JSON, CSV, TXT)
+   - Export format selection (JSON, CSV, Excel, TXT)
    - File name input
    - Export confirmation
 

@@ -182,7 +182,6 @@ class DetailsModal(ctk.CTkToplevel):
             command=self.destroy,
             height=45,
             font=ThemeManager.get_font("body_bold"),
-            corner_radius=10,
             **ThemeManager.get_button_style("primary")
         )
         close_btn.grid(row=2, column=0, padx=25, pady=(0, 25), sticky="ew")

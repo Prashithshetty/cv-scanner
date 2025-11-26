@@ -176,48 +176,48 @@ class CVAnalyzer:
         """
         logger.info(f"Extracting data from CV: {cv_name}")
         
-        # Create JSON extraction prompt
-        prompt = f"""You are a data extraction AI. Extract ONLY factual information from the CV in JSON format.
+        # Truncate CV text to avoid token limits (keep first 2000 chars for better accuracy)
+        cv_text_truncated = cv_text[:2000]
+        
+        # Create a more concise and strict JSON extraction prompt
+        prompt = f"""Extract CV data as valid JSON. NO markdown, NO extra text, NO assumptions.
 
-CRITICAL RULES:
-1. Output ONLY valid JSON (no extra text, no markdown)
-2. Quote exact CV text as evidence (max 100 chars per quote)
-3. Do NOT calculate scores or make recommendations
-4. If evidence is unclear, set found=false
-5. Be objective and literal
+Rules:
+1. Mark a skill as "found": true ONLY if the CV text contains a direct substring match.  
+2. Evidence MUST be an exact quote copied VERBATIM from CV Text. If no exact match exists, use null and set found: false.  
+3. DO NOT infer, guess, or assume any skill or technology that is not literally present.  
+4. Projects must ONLY use titles and technologies explicitly mentioned in the CV.  
+5. "transferable_skills" must ONLY list skills with direct quotes from CV Text.  
+6. "experience_years" must be 0 unless the CV explicitly states a number.  
+7. "issues" should list missing required skills if they were not found.
 
-Job Description:
-{job_description}
+Job Requirements:
+{job_description[:800]}
 
-CV Content:
-{cv_text[:3000]}
+CV Text:
+{cv_text_truncated}
 
-OUTPUT FORMAT (valid JSON only):
+Output this EXACT JSON structure with NO additional text:
 {{
   "required_skills": [
-    {{"skill": "skill name from JD", "found": true/false, "evidence": "exact CV quote or null"}}
+    {{"skill": "skill_name", "found": true, "evidence": "quote or null"}}
   ],
   "preferred_skills": [
-    {{"skill": "skill name from JD", "found": true/false, "evidence": "exact CV quote or null"}}
+    {{"skill": "skill_name", "found": false, "evidence": null}}
   ],
   "projects": [
-    {{
-      "title": "project name",
-      "technologies": ["tech1", "tech2"],
-      "deployment_proof": true/false,
-      "relevance": "high/medium/low"
-    }}
+    {{"title": "name", "technologies": ["tech"], "deployment_proof": false, "relevance": "low"}}
   ],
   "transferable_skills": [
-    {{"skill": "skill name", "evidence": "exact CV quote"}}
+    {{"skill": "name", "evidence": "quote"}}
   ],
-  "experience_years": number,
+  "experience_years": 0,
   "issues": [
-    {{"type": "ambiguous/contradiction/weak_evidence", "description": "brief note"}}
+    {{"type": "weak_evidence", "description": "note"}}
   ]
 }}
 
-Extract data now (JSON only):"""
+JSON only:"""
         
         try:
             # Use chat format for better structured responses
@@ -242,30 +242,120 @@ Extract data now (JSON only):"""
                 )
             
             # Parse JSON response
-            extracted_data = self._parse_json_response(response)
+            extracted_data = self._parse_json_response(response, cv_name)
             return extracted_data
             
         except Exception as e:
             logger.error(f"Error extracting data from CV {cv_name}: {e}")
             return self._get_empty_extraction()
     
-    def _parse_json_response(self, response: str) -> Dict:
-        """Parse AI JSON response with error handling"""
+    
+    def _parse_json_response(self, response: str, cv_name: str = "unknown") -> Dict:
+        """Parse AI JSON response with robust error handling and cleanup"""
         try:
-            # Try to find JSON in response
-            # Sometimes the AI might add extra text, so we extract JSON
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                json_str = json_match.group(0)
-                data = json.loads(json_str)
+            # Strategy 1: Try direct parsing first
+            try:
+                data = json.loads(response)
                 return data
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 2: Extract JSON block (handle markdown code fences)
+            json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
+            if json_match:
+                json_str = json_match.group(1)
             else:
-                logger.warning("No JSON found in AI response")
-                return self._get_empty_extraction()
+                # Strategy 3: Find first { to last }
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if not json_match:
+                    logger.warning("No JSON found in AI response")
+                    self._save_debug_response(response, cv_name, "no_json_found")
+                    return self._get_empty_extraction()
+                json_str = json_match.group(0)
+            
+            # Clean up common JSON issues
+            json_str = self._clean_json_string(json_str)
+            
+            # Try to parse cleaned JSON
+            data = json.loads(json_str)
+            return data
+            
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Response was: {response[:200]}")
+            logger.debug(f"Response preview: {response[:300]}...")
+            
+            # Save failed response for debugging
+            self._save_debug_response(response, cv_name, "json_error")
+            
+            # Last resort: try to salvage partial data
+            try:
+                return self._extract_partial_json(response)
+            except:
+                return self._get_empty_extraction()
+        except Exception as e:
+            logger.error(f"Unexpected error parsing JSON: {e}")
             return self._get_empty_extraction()
+    
+    def _save_debug_response(self, response: str, cv_name: str, error_type: str):
+        """Save problematic AI responses for debugging"""
+        try:
+            debug_dir = Path("debug_responses")
+            debug_dir.mkdir(exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = debug_dir / f"{cv_name}_{error_type}_{timestamp}.txt"
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"CV: {cv_name}\n")
+                f.write(f"Error Type: {error_type}\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write("="*80 + "\n")
+                f.write(response)
+            
+            logger.info(f"Debug response saved to: {filename}")
+        except Exception as e:
+            logger.warning(f"Could not save debug response: {e}")
+    
+    def _clean_json_string(self, json_str: str) -> str:
+        """Clean common JSON formatting issues"""
+        # Remove trailing commas before } or ]
+        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+        
+        # Fix missing commas between array/object elements (common AI mistake)
+        json_str = re.sub(r'(\})\s*(\{)', r'\1,\2', json_str)  # }{  -> },{
+        json_str = re.sub(r'(\])\s*(\[)', r'\1,\2', json_str)  # ][  -> ],[
+        
+        # Remove control characters that break JSON
+        json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\n\r\t')
+        
+        return json_str
+    
+    def _extract_partial_json(self, response: str) -> Dict:
+        """Attempt to extract partial data from malformed JSON"""
+        logger.info("Attempting partial JSON extraction...")
+        
+        # Try to extract at least some skills using regex
+        result = {
+            "required_skills": [],
+            "preferred_skills": [],
+            "projects": [],
+            "transferable_skills": [],
+            "experience_years": 0,
+            "issues": [{"type": "warning", "description": "Partial data extraction due to malformed JSON"}]
+        }
+        
+        # Extract skill mentions
+        skill_pattern = r'"skill":\s*"([^"]+)".*?"found":\s*(true|false)'
+        for match in re.finditer(skill_pattern, response, re.IGNORECASE):
+            skill_name = match.group(1)
+            found = match.group(2).lower() == 'true'
+            result["required_skills"].append({
+                "skill": skill_name,
+                "found": found,
+                "evidence": None
+            })
+        
+        return result
     
     def _get_empty_extraction(self) -> Dict:
         """Return empty extraction structure"""
