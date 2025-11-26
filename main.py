@@ -379,7 +379,7 @@ Write a concise summary explaining this candidate's fit:"""
                 "cv_text_preview": cv_text[:500] if cv_text else ""
             }
     
-    def process_all_cvs(self, cv_directory: str, job_description: str, batch_size: int = 4) -> List[Dict]:
+    def process_all_cvs(self, cv_directory: str, job_description: str, batch_size: int = 4, progress_callback=None) -> List[Dict]:
         """
         Process all CVs in the directory and analyze them (with parallel AI extraction)
         
@@ -387,10 +387,14 @@ Write a concise summary explaining this candidate's fit:"""
             cv_directory: Path to directory containing CVs
             job_description: Job description text
             batch_size: Number of CVs to process in each batch (deprecated, use config.parallel_workers)
+            progress_callback: Optional callback function(current, total, elapsed_time)
             
         Returns:
             List of analysis results for each CV
         """
+        import time
+        start_time = time.time()
+        
         # Step 1: Get all CV files
         cv_files = self.get_cv_files(cv_directory)
         
@@ -398,6 +402,10 @@ Write a concise summary explaining this candidate's fit:"""
         print(f"\n{'='*60}")
         print(f"Extracting text from {len(cv_files)} CVs...")
         print(f"{'='*60}\n")
+        
+        if progress_callback:
+            progress_callback(0, len(cv_files), 0)
+            
         cv_texts = self.extract_cvs_parallel(cv_files, max_workers=self.pdf_workers)
         
         if not cv_texts:
@@ -434,12 +442,20 @@ Write a concise summary explaining this candidate's fit:"""
                     results.append(result)
                     completed += 1
                     
+                    # Calculate elapsed time
+                    elapsed = time.time() - start_time
+                    
                     # Progress reporting
                     print(f"[{completed}/{total_cvs}] ✓ {cv_name}: {result['fit_score']}/100 | {result['recommendation']}")
+                    
+                    if progress_callback:
+                        progress_callback(completed, total_cvs, elapsed)
                     
                 except Exception as e:
                     logger.error(f"Failed to get result for {cv_name}: {e}")
                     completed += 1
+                    if progress_callback:
+                        progress_callback(completed, total_cvs, time.time() - start_time)
         
         logger.info(f"Successfully processed {len(results)} CVs")
         return results
