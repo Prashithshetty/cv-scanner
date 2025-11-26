@@ -16,16 +16,29 @@ python gui.py
 
 ## ⚙️ Configuration
 
-### GPU Settings (`config.json`)
-- **context_length:** 4096 (handle longer CVs)
-- **batch_size:** 1024 (GPU optimization)
-- **gpu_layers:** -1 (all layers on GPU)
-- **temperature:** 0.3 (consistent outputs)
+### GPU/CPU Mode Configuration (`config.json`)
 
-### Performance Settings (NEW)
-- **parallel_workers:** 3 (concurrent CV processing)
+**GPU Layers Setting** - Controls where the model runs:
+- **`gpu_layers: -1`** → Full GPU mode (all layers on GPU) - **FASTEST**
+  - Recommended for: RTX 3060+, RTX 4060+ (8GB+ VRAM)
+  - VRAM usage: ~5-6GB
+  
+- **`gpu_layers: 30`** → Partial GPU mode - **BALANCED**
+  - Recommended for: RTX 4050 (6GB VRAM)
+  - VRAM usage: ~4-5GB
+  - Best for 6GB cards to avoid out-of-memory errors
+  
+- **`gpu_layers: 0`** → CPU-only mode - **SLOWEST but no GPU needed**
+  - Use when: Testing, no GPU available, or GPU driver issues
+  - Utilizes all CPU cores (set `cpu_threads: 8` for Ryzen 7)
+
+### Other Performance Settings
+- **batch_size:** 2048 (larger = faster but more VRAM)
+- **cpu_threads:** 8 (match your CPU core count)
+- **max_tokens:** 600 (reduce for faster generation)
+- **parallel_workers:** 2-3 (concurrent CV processing)
 - **enable_summaries:** false (disable for 2x speedup)
-- **pdf_extraction_workers:** 4 (parallel PDF extraction)
+- **pdf_extraction_workers:** 4-6 (parallel PDF extraction)
 
 ---
 

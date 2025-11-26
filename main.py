@@ -51,6 +51,14 @@ class CVAnalyzer:
         # Thread safety for model access
         self.model_lock = threading.Lock()
         
+        # Pre-compile regex patterns for performance
+        self.json_block_pattern = re.compile(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```')
+        self.json_fallback_pattern = re.compile(r'\{[\s\S]*\}')
+        self.trailing_comma_pattern = re.compile(r',\s*([}\]])')
+        self.missing_comma_obj_pattern = re.compile(r'(\})\s*(\{)')
+        self.missing_comma_arr_pattern = re.compile(r'(\])\s*(\[)')
+        self.skill_pattern = re.compile(r'"skill":\s*"([^"]+)".*?"found":\s*(true|false)', re.IGNORECASE)
+        
         logger.info(f"AI model and scorer loaded successfully!")
         logger.info(f"Performance settings: parallel_workers={self.parallel_workers}, summaries={'ON' if self.enable_summaries else 'OFF'}")
     
@@ -90,18 +98,20 @@ class CVAnalyzer:
     
     def extract_cv_text(self, pdf_path: Path) -> str:
         """
-        Extract text from a CV PDF file
+        Extract text from a CV PDF file with early truncation
         
         Args:
             pdf_path: Path to PDF file
             
         Returns:
-            Extracted text content
+            Extracted text content (truncated to 2500 chars)
         """
         try:
             extractor = PDFTextExtractor(str(pdf_path))
             if extractor.extract():
-                return extractor.get_text()
+                full_text = extractor.get_text()
+                # Early truncation to save memory (slightly more than needed for AI)
+                return full_text[:2500]
             else:
                 logger.warning(f"Failed to extract text from {pdf_path.name}")
                 return ""
@@ -261,12 +271,12 @@ JSON only:"""
                 pass
             
             # Strategy 2: Extract JSON block (handle markdown code fences)
-            json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
+            json_match = self.json_block_pattern.search(response)
             if json_match:
                 json_str = json_match.group(1)
             else:
                 # Strategy 3: Find first { to last }
-                json_match = re.search(r'\{[\s\S]*\}', response)
+                json_match = self.json_fallback_pattern.search(response)
                 if not json_match:
                     logger.warning("No JSON found in AI response")
                     self._save_debug_response(response, cv_name, "no_json_found")
@@ -317,13 +327,13 @@ JSON only:"""
             logger.warning(f"Could not save debug response: {e}")
     
     def _clean_json_string(self, json_str: str) -> str:
-        """Clean common JSON formatting issues"""
+        """Clean common JSON formatting issues using pre-compiled patterns"""
         # Remove trailing commas before } or ]
-        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+        json_str = self.trailing_comma_pattern.sub(r'\1', json_str)
         
         # Fix missing commas between array/object elements (common AI mistake)
-        json_str = re.sub(r'(\})\s*(\{)', r'\1,\2', json_str)  # }{  -> },{
-        json_str = re.sub(r'(\])\s*(\[)', r'\1,\2', json_str)  # ][  -> ],[
+        json_str = self.missing_comma_obj_pattern.sub(r'\1,\2', json_str)  # }{  -> },{
+        json_str = self.missing_comma_arr_pattern.sub(r'\1,\2', json_str)  # ][  -> ],[
         
         # Remove control characters that break JSON
         json_str = ''.join(char for char in json_str if ord(char) >= 32 or char in '\n\r\t')
@@ -344,9 +354,8 @@ JSON only:"""
             "issues": [{"type": "warning", "description": "Partial data extraction due to malformed JSON"}]
         }
         
-        # Extract skill mentions
-        skill_pattern = r'"skill":\s*"([^"]+)".*?"found":\s*(true|false)'
-        for match in re.finditer(skill_pattern, response, re.IGNORECASE):
+        # Extract skill mentions using pre-compiled pattern
+        for match in self.skill_pattern.finditer(response):
             skill_name = match.group(1)
             found = match.group(2).lower() == 'true'
             result["required_skills"].append({
@@ -380,12 +389,9 @@ JSON only:"""
         Returns:
             Summary text
         """
-        # Check if summaries are enabled
+        # Quick exit if summaries disabled (avoid function overhead)
         if not self.enable_summaries:
-            # Return a quick summary based on scoring data
-            req_found = sum(1 for s in extracted_data.get('required_skills', []) if s.get('found'))
-            req_total = len(extracted_data.get('required_skills', []))
-            return f"Score: {score_result['final_score']}/100 ({score_result['recommendation']}) - {req_found}/{req_total} required skills found"
+            return self._quick_summary(extracted_data, score_result)
         
         try:
             prompt = f"""Generate a brief 2-3 sentence hiring summary.
@@ -419,6 +425,12 @@ Write a concise summary explaining this candidate's fit:"""
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             return "Summary generation failed"
+    
+    def _quick_summary(self, extracted_data: Dict, score_result: Dict) -> str:
+        """Generate fast summary without AI (when summaries disabled)"""
+        req_found = sum(1 for s in extracted_data.get('required_skills', []) if s.get('found'))
+        req_total = len(extracted_data.get('required_skills', []))
+        return f"Score: {score_result['final_score']}/100 ({score_result['recommendation']}) - {req_found}/{req_total} required skills found"
     
     def _process_single_cv(self, cv_name: str, cv_text: str, job_description: str) -> Dict:
         """
