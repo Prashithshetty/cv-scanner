@@ -17,6 +17,7 @@ from typing import List, Dict, Tuple
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Import our custom modules
 from ai_gguf import GGUFModelRunner, load_config
@@ -41,7 +42,17 @@ class CVAnalyzer:
         self.ai_runner = GGUFModelRunner(self.config)
         self.ai_runner.load_model()
         self.scorer = CVScorer()
-        logger.info("AI model and scorer loaded successfully!")
+        
+        # Performance settings
+        self.parallel_workers = self.config.get('parallel_workers', 3)
+        self.enable_summaries = self.config.get('enable_summaries', False)
+        self.pdf_workers = self.config.get('pdf_extraction_workers', 4)
+        
+        # Thread safety for model access
+        self.model_lock = threading.Lock()
+        
+        logger.info(f"AI model and scorer loaded successfully!")
+        logger.info(f"Performance settings: parallel_workers={self.parallel_workers}, summaries={'ON' if self.enable_summaries else 'OFF'}")
     
     def get_cv_files(self, cv_directory: str) -> List[Path]:
         """
@@ -109,7 +120,7 @@ class CVAnalyzer:
         Returns:
             Dictionary mapping cv_name to extracted text
         """
-        logger.info(f"Extracting text from {len(cv_files)} CVs in parallel...")
+        logger.info(f"Extracting text from {len(cv_files)} CVs in parallel (workers={max_workers})...")
         cv_texts = {}
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -221,12 +232,14 @@ Extract data now (JSON only):"""
                 }
             ]
             
-            response = self.ai_runner.chat(
-                messages=messages,
-                max_tokens=1024,
-                temperature=0.3,  # Low for consistency
-                stream=False
-            )
+            # Thread-safe model access with lock
+            with self.model_lock:
+                response = self.ai_runner.chat(
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=0.3,  # Low for consistency
+                    stream=False
+                )
             
             # Parse JSON response
             extracted_data = self._parse_json_response(response)
@@ -277,6 +290,13 @@ Extract data now (JSON only):"""
         Returns:
             Summary text
         """
+        # Check if summaries are enabled
+        if not self.enable_summaries:
+            # Return a quick summary based on scoring data
+            req_found = sum(1 for s in extracted_data.get('required_skills', []) if s.get('found'))
+            req_total = len(extracted_data.get('required_skills', []))
+            return f"Score: {score_result['final_score']}/100 ({score_result['recommendation']}) - {req_found}/{req_total} required skills found"
+        
         try:
             prompt = f"""Generate a brief 2-3 sentence hiring summary.
 
@@ -296,59 +316,37 @@ Write a concise summary explaining this candidate's fit:"""
                 {"role": "user", "content": prompt}
             ]
             
-            summary = self.ai_runner.chat(
-                messages=messages,
-                max_tokens=150,
-                temperature=0.5,
-                stream=False
-            )
+            # Thread-safe model access with lock
+            with self.model_lock:
+                summary = self.ai_runner.chat(
+                    messages=messages,
+                    max_tokens=150,
+                    temperature=0.5,
+                    stream=False
+                )
             
             return summary.strip()
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             return "Summary generation failed"
     
-    def process_all_cvs(self, cv_directory: str, job_description: str, batch_size: int = 4) -> List[Dict]:
+    def _process_single_cv(self, cv_name: str, cv_text: str, job_description: str) -> Dict:
         """
-        Process all CVs in the directory and analyze them
+        Process a single CV (thread-safe helper method)
         
         Args:
-            cv_directory: Path to directory containing CVs
+            cv_name: CV file name
+            cv_text: Extracted CV text
             job_description: Job description text
-            batch_size: Number of CVs to process in each batch
             
         Returns:
-            List of analysis results for each CV
+            Analysis result dictionary
         """
-        # Step 1: Get all CV files
-        cv_files = self.get_cv_files(cv_directory)
-        
-        # Step 2: Extract text in parallel
-        print(f"\n{'='*60}")
-        print(f"Extracting text from {len(cv_files)} CVs...")
-        print(f"{'='*60}\n")
-        cv_texts = self.extract_cvs_parallel(cv_files, max_workers=4)
-        
-        if not cv_texts:
-            logger.error("No CVs with sufficient text found!")
-            return []
-        
-        # Step 3: Process CVs
-        results = []
-        cv_items = list(cv_texts.items())
-        
-        logger.info(f"Processing {len(cv_items)} CVs in batches of {batch_size}...")
-        print(f"\n{'='*60}")
-        print(f"Analyzing {len(cv_items)} CVs against job description")
-        print(f"{'='*60}\n")
-        
-        for idx, (cv_name, cv_text) in enumerate(cv_items, 1):
-            print(f"[{idx}/{len(cv_items)}] Processing: {cv_name}")
-            
+        try:
             # Extract data with AI
             extracted_data = self.extract_cv_data(cv_text, job_description, cv_name)
             
-            # Calculate score with Python
+            # Calculate score with Python (deterministic, fast)
             score_result = self.scorer.calculate_score(extracted_data)
             
             # Optional: Generate summary
@@ -366,8 +364,82 @@ Write a concise summary explaining this candidate's fit:"""
                 "cv_text_preview": cv_text[:500]
             }
             
-            results.append(result)
-            print(f"  ✓ Score: {result['fit_score']}/100 | {result['recommendation']}\n")
+            return result
+        except Exception as e:
+            logger.error(f"Error processing {cv_name}: {e}")
+            # Return a minimal result even on error
+            return {
+                "cv_file": cv_name,
+                "fit_score": 0,
+                "recommendation": "ERROR",
+                "summary": f"Processing failed: {str(e)}",
+                "breakdown": ["Error during processing"],
+                "extracted_data": {},
+                "details": {},
+                "cv_text_preview": cv_text[:500] if cv_text else ""
+            }
+    
+    def process_all_cvs(self, cv_directory: str, job_description: str, batch_size: int = 4) -> List[Dict]:
+        """
+        Process all CVs in the directory and analyze them (with parallel AI extraction)
+        
+        Args:
+            cv_directory: Path to directory containing CVs
+            job_description: Job description text
+            batch_size: Number of CVs to process in each batch (deprecated, use config.parallel_workers)
+            
+        Returns:
+            List of analysis results for each CV
+        """
+        # Step 1: Get all CV files
+        cv_files = self.get_cv_files(cv_directory)
+        
+        # Step 2: Extract text in parallel
+        print(f"\n{'='*60}")
+        print(f"Extracting text from {len(cv_files)} CVs...")
+        print(f"{'='*60}\n")
+        cv_texts = self.extract_cvs_parallel(cv_files, max_workers=self.pdf_workers)
+        
+        if not cv_texts:
+            logger.error("No CVs with sufficient text found!")
+            return []
+        
+        # Step 3: Process CVs with parallel AI extraction
+        cv_items = list(cv_texts.items())
+        total_cvs = len(cv_items)
+        
+        logger.info(f"Processing {total_cvs} CVs with {self.parallel_workers} parallel workers...")
+        logger.info(f"Summary generation: {'ENABLED' if self.enable_summaries else 'DISABLED (for speed)'}")
+        print(f"\n{'='*60}")
+        print(f"Analyzing {total_cvs} CVs against job description")
+        print(f"Workers: {self.parallel_workers} | Summaries: {'ON' if self.enable_summaries else 'OFF'}")
+        print(f"{'='*60}\n")
+        
+        results = []
+        completed = 0
+        
+        # Use ThreadPoolExecutor for parallel AI extraction
+        with ThreadPoolExecutor(max_workers=self.parallel_workers) as executor:
+            # Submit all CV processing tasks
+            future_to_cv = {
+                executor.submit(self._process_single_cv, cv_name, cv_text, job_description): cv_name
+                for cv_name, cv_text in cv_items
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_cv):
+                cv_name = future_to_cv[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    completed += 1
+                    
+                    # Progress reporting
+                    print(f"[{completed}/{total_cvs}] ✓ {cv_name}: {result['fit_score']}/100 | {result['recommendation']}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to get result for {cv_name}: {e}")
+                    completed += 1
         
         logger.info(f"Successfully processed {len(results)} CVs")
         return results

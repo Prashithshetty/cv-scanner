@@ -16,5 +16,8 @@
   "stream": false,
   "echo": false,
   "verbose": false,
-  "use_chat_format": true
+  "use_chat_format": true,
+  "parallel_workers": 3,
+  "enable_summaries": false,
+  "pdf_extraction_workers": 4
 }

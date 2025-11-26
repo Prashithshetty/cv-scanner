@@ -45,6 +45,10 @@ class CVScannerApp(ctk.CTk):
         self.current_sort = "score"
         self.current_filter = "All"
         self.analysis_stats = {"total": 0, "shortlist": 0, "review": 0, "reject": 0}
+        
+        # Performance settings
+        self.parallel_workers = 3
+        self.enable_summaries = False
 
         # Build UI
         self.create_sidebar()
@@ -198,6 +202,78 @@ class CVScannerApp(ctk.CTk):
         )
         self.appearance_mode.grid(row=10, column=0, padx=20, pady=(0, 20), sticky="ew")
         self.appearance_mode.set("Dark")
+        
+        # Performance Settings Section
+        perf_divider = ctk.CTkFrame(self.sidebar_frame, height=2, fg_color=("#e5e7eb", "#2d3748"))
+        perf_divider.grid(row=11, column=0, sticky="ew", padx=20, pady=(0, 15))
+        
+        perf_title = ctk.CTkLabel(
+            self.sidebar_frame,
+            text="⚡ Performance",
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
+        perf_title.grid(row=12, column=0, padx=20, pady=(0, 8), sticky="w")
+        
+        # Parallel Workers Slider
+        workers_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        workers_frame.grid(row=13, column=0, padx=20, pady=(0, 10), sticky="ew")
+        
+        workers_label = ctk.CTkLabel(
+            workers_frame,
+            text="Parallel Workers:",
+            font=ctk.CTkFont(size=11),
+            anchor="w"
+        )
+        workers_label.pack(side="left")
+        
+        self.workers_value_label = ctk.CTkLabel(
+            workers_frame,
+            text="3",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=("#667eea", "#667eea"),
+            anchor="e"
+        )
+        self.workers_value_label.pack(side="right")
+        
+        self.workers_slider = ctk.CTkSlider(
+            self.sidebar_frame,
+            from_=1,
+            to=6,
+            number_of_steps=5,
+            command=self.update_workers,
+            height=16,
+            button_color=("#667eea", "#667eea"),
+            button_hover_color=("#5568d3", "#5568d3"),
+            progress_color=("#667eea", "#667eea")
+        )
+        self.workers_slider.grid(row=14, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self.workers_slider.set(3)
+        
+        # Summary Generation Toggle
+        summary_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        summary_frame.grid(row=15, column=0, padx=20, pady=(0, 10), sticky="ew")
+        
+        summary_label = ctk.CTkLabel(
+            summary_frame,
+            text="AI Summaries:",
+            font=ctk.CTkFont(size=11),
+            anchor="w"
+        )
+        summary_label.pack(side="left")
+        
+        self.summary_switch = ctk.CTkSwitch(
+            summary_frame,
+            text="",
+            command=self.toggle_summaries,
+            width=40,
+            height=20,
+            button_color=("#667eea", "#667eea"),
+            button_hover_color=("#5568d3", "#5568d3"),
+            progress_color=("#667eea", "#667eea")
+        )
+        self.summary_switch.pack(side="right")
+        self.summary_switch.deselect()  # Off by default for speed
 
         # Status with modern styling
         self.status_label = ctk.CTkLabel(
@@ -207,7 +283,7 @@ class CVScannerApp(ctk.CTk):
             text_color=("#56ab2f", "#56ab2f"), 
             anchor="w"
         )
-        self.status_label.grid(row=11, column=0, padx=20, pady=(0, 25), sticky="sw")
+        self.status_label.grid(row=16, column=0, padx=20, pady=(10, 25), sticky="sw")
 
     # -----------------------
     # Main panel
@@ -364,6 +440,15 @@ class CVScannerApp(ctk.CTk):
             "info": "#4facfe"
         }
         self.update_status(f"ℹ️ {message}", colors.get(type, "#4facfe"))
+    
+    def update_workers(self, value):
+        """Update parallel workers value"""
+        self.parallel_workers = int(value)
+        self.workers_value_label.configure(text=str(self.parallel_workers))
+    
+    def toggle_summaries(self):
+        """Toggle summary generation"""
+        self.enable_summaries = bool(self.summary_switch.get())
 
     # -----------------------
     # Analysis
@@ -408,8 +493,33 @@ class CVScannerApp(ctk.CTk):
 
     def run_analysis(self, cv_dir, job_description):
         try:
-            analyzer = CVAnalyzer()
+            # Create analyzer with custom config
+            import json
+            from pathlib import Path
+            
+            # Load existing config and override with GUI settings
+            config_path = Path("config.json")
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+            else:
+                config_data = {}
+            
+            # Override performance settings from GUI
+            config_data['parallel_workers'] = self.parallel_workers
+            config_data['enable_summaries'] = self.enable_summaries
+            
+            # Save temporarily or pass to analyzer
+            temp_config_path = Path("temp_config.json")
+            with open(temp_config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            
+            analyzer = CVAnalyzer(str(temp_config_path))
             all_results = analyzer.process_all_cvs(cv_dir, job_description)
+            
+            # Clean up temp config
+            if temp_config_path.exists():
+                temp_config_path.unlink()
             
             # Store and categorize
             self.analysis_data = {os.path.basename(res["cv_file"]): res for res in all_results}

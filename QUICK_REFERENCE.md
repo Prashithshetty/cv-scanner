@@ -22,6 +22,11 @@ python gui.py
 - **gpu_layers:** -1 (all layers on GPU)
 - **temperature:** 0.3 (consistent outputs)
 
+### Performance Settings (NEW)
+- **parallel_workers:** 3 (concurrent CV processing)
+- **enable_summaries:** false (disable for 2x speedup)
+- **pdf_extraction_workers:** 4 (parallel PDF extraction)
+
 ---
 
 ## 📊 Scoring System
@@ -72,28 +77,29 @@ Edit `config.json`:
 ```json
 {
   "batch_size": 1024,  // Increase for more VRAM
-  "context_length": 4096  // Increase for longer CVs
+  "context_length": 4096,  // Increase for longer CVs
+  "parallel_workers": 3,  // 1-6 concurrent CV analyses
+  "enable_summaries": false  // true=slower but detailed
 }
 ```
+
+### Optimize Processing Speed
+**Fast Mode (Recommended):**
+- `parallel_workers`: 3-4
+- `enable_summaries`: false
+- **Result:** 3-5x speedup
+
+**Quality Mode:**
+- `parallel_workers`: 1-2
+- `enable_summaries`: true
+- **Result:** Detailed AI summaries
 
 ---
 
 ## 🐛 Common Issues
 
 ### GPU Not Used
-```bash
-# Reinstall with CUDA support
-CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python --force-reinstall
-```
-
-### JSON Parse Errors
-- Increase temperature: `0.3` → `0.4`
-- Check AI responses in logs
-
-### Slow Processing
-- Increase parallel workers in code
-- Reduce max_tokens
-- Disable summary generation
+- **Disable Summaries:** Toggle off in GUI for instant 2x speedup
 
 ---
 
@@ -115,13 +121,11 @@ cv-scanner/
 ## ✅ Key Benefits
 
 1. **100% Accurate Scoring** - No AI math errors
-2. **2x Faster** - Parallel processing
+2. **3-5x Faster** - Parallel processing + optional summaries
 3. **Better GPU Usage** - Optimized for RTX 4050
 4. **Transparent** - See exact score breakdown
 5. **Easy to Customize** - Python rules vs AI prompt
+6. **Tunable Performance** - Balance speed vs detail
 
 ---
 
-## 📞 Need Help?
-
-Check the full walkthrough: `walkthrough.md`

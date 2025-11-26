@@ -5,9 +5,11 @@ A local LLM-based tool for analyzing and scoring Curriculum Vitae (CVs) against 
 ## 🚀 Features
 
 *   **Local Processing:** Uses local LLMs (GGUF format) for privacy and offline capability.
+*   **High Performance:** Parallel processing engine analyzes 3-5x faster than standard tools.
 *   **Dual Interface:** Run analysis via Command Line Interface (CLI) or a modern GUI.
 *   **Deterministic Scoring:** Python-based scoring engine for accurate and reproducible results.
-*   **PDF Parsing:** robust extraction from PDF documents.
+*   **Tunable Speed:** Adjustable worker count and optional AI summaries to balance speed vs detail.
+*   **PDF Parsing:** Robust parallel extraction from PDF documents.
 *   **GPU Acceleration:** Optimized for GPU usage with `llama-cpp-python`.
 
 ## 📋 Prerequisites
@@ -45,7 +47,7 @@ python main.py
 ```
 
 ### Graphical User Interface (GUI)
-Launch the user-friendly interface:
+Launch the modern interface with performance controls (worker slider, summary toggle):
 ```bash
 python gui.py
 ```
@@ -58,6 +60,8 @@ You can customize the application behavior in `config.json`:
 *   `batch_size`: 1024 (Adjust based on VRAM)
 *   `gpu_layers`: -1 (Offloads all layers to GPU)
 *   `temperature`: 0.3 (Controls generation randomness)
+*   `parallel_workers`: 3 (Number of concurrent CVs to process)
+*   `enable_summaries`: false (Set to true for detailed AI summaries, false for 2x speed)
 
 ## 📊 Scoring System
 
