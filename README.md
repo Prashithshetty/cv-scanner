@@ -21,7 +21,7 @@ A local LLM-based tool for analyzing and scoring Curriculum Vitae (CVs) against 
 
 1.  **Clone the repository**
     ```bash
-    git clone <repository-url>
+    git clone https://github.com/Prashithshetty/cv-scanner.git
     cd cv-scanner
     ```
 
