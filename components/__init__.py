@@ -1,4 +1,4 @@
-"""
+`"""
 Modular GUI Components for CV Scanner
 """
 
