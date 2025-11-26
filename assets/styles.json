@@ -1,0 +1,81 @@
+{
+    "colors": {
+        "primary_gradient": [
+            "#667eea",
+            "#764ba2"
+        ],
+        "success_gradient": [
+            "#56ab2f",
+            "#a8e063"
+        ],
+        "warning_gradient": [
+            "#f2994a",
+            "#f2c94c"
+        ],
+        "danger_gradient": [
+            "#eb3349",
+            "#f45c43"
+        ],
+        "info_gradient": [
+            "#4facfe",
+            "#00f2fe"
+        ],
+        "dark_bg": "#1a1a2e",
+        "dark_surface": "#16213e",
+        "light_bg": "#f5f7fa",
+        "light_surface": "#ffffff",
+        "accent": "#667eea",
+        "text_primary": "#ffffff",
+        "text_secondary": "#a0aec0",
+        "border_light": "#2d3748"
+    },
+    "fonts": {
+        "title": {
+            "size": 32,
+            "weight": "bold"
+        },
+        "subtitle": {
+            "size": 14,
+            "weight": "normal"
+        },
+        "heading": {
+            "size": 20,
+            "weight": "bold"
+        },
+        "subheading": {
+            "size": 16,
+            "weight": "bold"
+        },
+        "body": {
+            "size": 13,
+            "weight": "normal"
+        },
+        "small": {
+            "size": 11,
+            "weight": "normal"
+        },
+        "button": {
+            "size": 14,
+            "weight": "bold"
+        }
+    },
+    "spacing": {
+        "xs": 5,
+        "sm": 10,
+        "md": 15,
+        "lg": 20,
+        "xl": 30,
+        "xxl": 40
+    },
+    "animation": {
+        "fast": 150,
+        "normal": 250,
+        "slow": 400
+    },
+    "corners": {
+        "small": 6,
+        "medium": 10,
+        "large": 15,
+        "xl": 20
+    }
+}

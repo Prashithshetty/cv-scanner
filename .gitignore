@@ -1,0 +1,16 @@
+# Model files
+model/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temporary data
+fake_cvs/
+
+# Environment variables
+.env
+
+# IDE settings
+.vscode/
+.idea/

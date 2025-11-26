@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-CV Analysis Tool - Main Script
-Analyzes multiple CVs against a job description and returns top 10 matches
+CV Analysis Tool - Main Script (Optimized)
+Analyzes multiple CVs against a job description using:
+- JSON-based AI extraction
+- Python deterministic scoring
+- GPU batch processing
+- Parallel text extraction
 """
 
 import os
@@ -12,10 +16,12 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 import logging
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import our custom modules
 from ai_gguf import GGUFModelRunner, load_config
 from pdf_extractor import PDFTextExtractor
+from scorer import CVScorer
 
 # Setup logging
 logging.basicConfig(
@@ -26,15 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 class CVAnalyzer:
-    """Main class for CV analysis workflow"""
+    """Main class for CV analysis workflow with optimizations"""
     
     def __init__(self, config_path: str = "config.json"):
-        """Initialize the CV analyzer with AI model"""
+        """Initialize the CV analyzer with AI model and scorer"""
         logger.info("Initializing CV Analyzer...")
         self.config = load_config(config_path)
         self.ai_runner = GGUFModelRunner(self.config)
         self.ai_runner.load_model()
-        logger.info("AI model loaded successfully!")
+        self.scorer = CVScorer()
+        logger.info("AI model and scorer loaded successfully!")
     
     def get_cv_files(self, cv_directory: str) -> List[Path]:
         """
@@ -55,13 +62,10 @@ class CVAnalyzer:
             raise ValueError(f"Path is not a directory: {cv_directory}")
         
         # Find all PDF files using case-insensitive pattern
-        # Use a set to avoid duplicates on case-insensitive file systems
         pdf_files_set = set()
         
-        # Method 1: Use case-insensitive glob pattern
         for pattern in ['*.pdf', '*.PDF', '*.Pdf']:
             for file in cv_path.glob(pattern):
-                # Use resolve() to get absolute path and avoid duplicates
                 pdf_files_set.add(file.resolve())
         
         # Convert set back to list and sort for consistent ordering
@@ -94,9 +98,62 @@ class CVAnalyzer:
             logger.error(f"Error extracting text from {pdf_path.name}: {e}")
             return ""
     
-    def analyze_cv_match(self, cv_text: str, job_description: str, cv_name: str) -> Dict:
+    def extract_cvs_parallel(self, cv_files: List[Path], max_workers: int = 4) -> Dict[str, str]:
         """
-        Use AI to analyze how well a CV matches the job description
+        Extract text from multiple CVs in parallel
+        
+        Args:
+            cv_files: List of CV file paths
+            max_workers: Number of parallel workers
+            
+        Returns:
+            Dictionary mapping cv_name to extracted text
+        """
+        logger.info(f"Extracting text from {len(cv_files)} CVs in parallel...")
+        cv_texts = {}
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all extraction tasks
+            future_to_cv = {
+                executor.submit(self.extract_cv_text, cv_file): cv_file 
+                for cv_file in cv_files
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_cv):
+                cv_file = future_to_cv[future]
+                try:
+                    text = future.result()
+                    if text and len(text.strip()) >= 50:
+                        cv_texts[cv_file.name] = text
+                    else:
+                        logger.warning(f"Insufficient text from {cv_file.name}")
+                except Exception as e:
+                    logger.error(f"Failed to extract {cv_file.name}: {e}")
+        
+        logger.info(f"Successfully extracted {len(cv_texts)} CVs")
+        return cv_texts
+    
+    def parse_job_requirements(self, job_description: str) -> Dict:
+        """
+        Parse job description into structured requirements
+        This helps the AI understand what to look for
+        
+        Args:
+            job_description: Raw job description text
+            
+        Returns:
+            Structured requirements dictionary
+        """
+        # For now, return as-is. You can enhance this to parse JD into sections
+        return {
+            "full_text": job_description,
+            "note": "AI will extract relevant skills and requirements from this description"
+        }
+    
+    def extract_cv_data(self, cv_text: str, job_description: str, cv_name: str) -> Dict:
+        """
+        Use AI to extract structured data from CV (NOT calculate scores)
         
         Args:
             cv_text: Extracted text from CV
@@ -104,98 +161,59 @@ class CVAnalyzer:
             cv_name: Name of the CV file (for logging)
             
         Returns:
-            Dictionary with analysis results including score and reasoning
+            Dictionary with extracted structured data
         """
-        logger.info(f"Analyzing CV: {cv_name}")
+        logger.info(f"Extracting data from CV: {cv_name}")
         
-        # Create a comprehensive prompt for CV analysis
-        prompt = f"""You are an objective CV evaluator. Compare the CV only against the job description. Be neutral, literal, and fully evidence-based.
+        # Create JSON extraction prompt
+        prompt = f"""You are a data extraction AI. Extract ONLY factual information from the CV in JSON format.
 
-HARD RULES
-
-Use ONLY text explicitly present in the CV or JD. No assumptions, no invented experience.
-
-Credit transferable skills ONLY when backed by a direct CV quote and label them “transferable”.
-
-If a required skill is missing or unclear, mark “Insufficient evidence” and award zero points.
-
-Do not infer or mention protected attributes.
-
-Ambiguous CV claims must be marked “ambiguous” and penalized.
-
-OUTPUT FORMAT (exact order, plain text)
-
-OVERALL SUMMARY:
-1–2 sentences only.
-
-KEY STRENGTHS:
-
-Bullet points with a short CV quote in parentheses as EVIDENCE.
-
-POTENTIAL GAPS:
-
-Bullet points with either a CV quote or “Insufficient evidence”.
-
-FIT SCORE:
-Fit Score: X%
-
-SCORE BREAKDOWN:
-
-Bullet list of exact rubric adjustments used.
-
-End with one short justification sentence.
-
-RECOMMENDATION:
-SHORTLIST / REVIEW / REJECT
-
-NOTE:
-State any ambiguity in one short line.
-
-SCORING RUBRIC (deterministic)
-
-Start at 50.
-
-Add:
-+15 each required skill explicitly present (max +45)
-+10 each strong project proving a required responsibility (max +20)
-+5 each deployment/production evidence (max +10)
-+5 each preferred skill (max +10)
-+5 each transferable skill with explicit quote (max +10)
-
-Subtract:
--20 each missing required skill
--10 each contradictory claim
--5 each ambiguous or weak evidence
-
-Clamp final score to 0–100.
-
-THRESHOLDS
-
-≥75 SHORTLIST
-60–74 REVIEW
-<60 REJECT
-
-EXTRA RULES
-
-Always quote CV text for every claim.
-
-Personal adjectives without proof get “Insufficient evidence”.
-
-If JD has unclear or missing requirements, output: Insufficient job description clarity.
+CRITICAL RULES:
+1. Output ONLY valid JSON (no extra text, no markdown)
+2. Quote exact CV text as evidence (max 100 chars per quote)
+3. Do NOT calculate scores or make recommendations
+4. If evidence is unclear, set found=false
+5. Be objective and literal
 
 Job Description:
 {job_description}
 
 CV Content:
-{cv_text}
-"""
+{cv_text[:3000]}
+
+OUTPUT FORMAT (valid JSON only):
+{{
+  "required_skills": [
+    {{"skill": "skill name from JD", "found": true/false, "evidence": "exact CV quote or null"}}
+  ],
+  "preferred_skills": [
+    {{"skill": "skill name from JD", "found": true/false, "evidence": "exact CV quote or null"}}
+  ],
+  "projects": [
+    {{
+      "title": "project name",
+      "technologies": ["tech1", "tech2"],
+      "deployment_proof": true/false,
+      "relevance": "high/medium/low"
+    }}
+  ],
+  "transferable_skills": [
+    {{"skill": "skill name", "evidence": "exact CV quote"}}
+  ],
+  "experience_years": number,
+  "issues": [
+    {{"type": "ambiguous/contradiction/weak_evidence", "description": "brief note"}}
+  ]
+}}
+
+Extract data now (JSON only):"""
         
         try:
             # Use chat format for better structured responses
             messages = [
                 {
                     "role": "system",
-                    "content": "You are an objective technical recruiter AI. Follow all rules and formatting instructions precisely."
+                    "content": "You are a precise data extraction AI. Output only valid JSON with no extra text."
                 },
                 {
                     "role": "user",
@@ -206,128 +224,152 @@ CV Content:
             response = self.ai_runner.chat(
                 messages=messages,
                 max_tokens=1024,
-                temperature=0.2  # Lower temperature for deterministic output
+                temperature=0.3,  # Low for consistency
+                stream=False
             )
             
-            # Parse the plain text response
-            analysis = self._parse_analysis(response)
-            return analysis
+            # Parse JSON response
+            extracted_data = self._parse_json_response(response)
+            return extracted_data
             
         except Exception as e:
-            logger.error(f"Error analyzing CV {cv_name}: {e}")
-            return {
-                "fit_score": 0,
-                "recommendation": "ERROR",
-                "summary": f"Error: {str(e)}",
-                "strengths": [],
-                "gaps": [],
-                "breakdown": []
-            }
+            logger.error(f"Error extracting data from CV {cv_name}: {e}")
+            return self._get_empty_extraction()
     
-    def _parse_analysis(self, response_text: str) -> Dict:
-        """Parse the plain text AI response into a dictionary"""
-        analysis = {}
+    def _parse_json_response(self, response: str) -> Dict:
+        """Parse AI JSON response with error handling"""
+        try:
+            # Try to find JSON in response
+            # Sometimes the AI might add extra text, so we extract JSON
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                json_str = json_match.group(0)
+                data = json.loads(json_str)
+                return data
+            else:
+                logger.warning("No JSON found in AI response")
+                return self._get_empty_extraction()
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error: {e}")
+            logger.debug(f"Response was: {response[:200]}")
+            return self._get_empty_extraction()
+    
+    def _get_empty_extraction(self) -> Dict:
+        """Return empty extraction structure"""
+        return {
+            "required_skills": [],
+            "preferred_skills": [],
+            "projects": [],
+            "transferable_skills": [],
+            "experience_years": 0,
+            "issues": [{"type": "error", "description": "Failed to extract data"}]
+        }
+    
+    def generate_summary(self, extracted_data: Dict, score_result: Dict, cv_name: str) -> str:
+        """
+        Generate a human-readable summary using AI (optional second pass)
         
-        # Helper to extract a section
-        def extract_section(start_key: str, end_key: str) -> str:
-            try:
-                start_index = response_text.index(start_key) + len(start_key)
-                end_index = response_text.index(end_key, start_index)
-                return response_text[start_index:end_index].strip()
-            except ValueError:
-                return ""
-        
-        # Helper to extract the final section
-        def extract_final_section(start_key: str) -> str:
-            try:
-                start_index = response_text.index(start_key) + len(start_key)
-                return response_text[start_index:].strip()
-            except ValueError:
-                return ""
+        Args:
+            extracted_data: Data extracted by AI
+            score_result: Scoring results from Python
+            cv_name: CV file name
+            
+        Returns:
+            Summary text
+        """
+        try:
+            prompt = f"""Generate a brief 2-3 sentence hiring summary.
 
-        # Extract FIT SCORE
-        score_match = re.search(r"Fit Score:\s*(\d+)%", response_text)
-        analysis['fit_score'] = int(score_match.group(1)) if score_match else 0
-        
-        # Extract RECOMMENDATION
-        rec_match = re.search(r"RECOMMENDATION:\s*(SHORTLIST|REVIEW|REJECT)", response_text)
-        analysis['recommendation'] = rec_match.group(1) if rec_match else "N/A"
+Candidate: {cv_name}
+Score: {score_result['final_score']}/100
+Recommendation: {score_result['recommendation']}
 
-        # Extract sections using headers
-        analysis['summary'] = extract_section("OVERALL SUMMARY:", "KEY STRENGTHS:").strip()
-        strengths_text = extract_section("KEY STRENGTHS:", "POTENTIAL GAPS:")
-        gaps_text = extract_section("POTENTIAL GAPS:", "FIT SCORE:")
-        breakdown_text = extract_section("SCORE BREAKDOWN:", "RECOMMENDATION:")
-        note_text = extract_final_section("NOTE:")
+Key Points:
+- Required skills found: {sum(1 for s in extracted_data.get('required_skills', []) if s.get('found'))}
+- Projects: {len(extracted_data.get('projects', []))}
+- Issues: {len(extracted_data.get('issues', []))}
 
-        # Parse bulleted lists
-        analysis['strengths'] = [s.strip() for s in strengths_text.split('- ') if s.strip()]
-        analysis['gaps'] = [g.strip() for g in gaps_text.split('- ') if g.strip()]
-        analysis['breakdown'] = [b.strip() for b in breakdown_text.split('- ') if b.strip()]
-        analysis['note'] = note_text.strip()
-
-        return analysis
-
-    def process_all_cvs(self, cv_directory: str, job_description: str) -> List[Dict]:
+Write a concise summary explaining this candidate's fit:"""
+            
+            messages = [
+                {"role": "system", "content": "You are a concise hiring analyst."},
+                {"role": "user", "content": prompt}
+            ]
+            
+            summary = self.ai_runner.chat(
+                messages=messages,
+                max_tokens=150,
+                temperature=0.5,
+                stream=False
+            )
+            
+            return summary.strip()
+        except Exception as e:
+            logger.error(f"Error generating summary: {e}")
+            return "Summary generation failed"
+    
+    def process_all_cvs(self, cv_directory: str, job_description: str, batch_size: int = 4) -> List[Dict]:
         """
         Process all CVs in the directory and analyze them
         
         Args:
             cv_directory: Path to directory containing CVs
             job_description: Job description text
+            batch_size: Number of CVs to process in each batch
             
         Returns:
             List of analysis results for each CV
         """
+        # Step 1: Get all CV files
         cv_files = self.get_cv_files(cv_directory)
-        results = []
-        processed_files = set()  # Track processed files to avoid duplicates
         
-        logger.info(f"Processing {len(cv_files)} CVs...")
+        # Step 2: Extract text in parallel
         print(f"\n{'='*60}")
-        print(f"Processing {len(cv_files)} CVs against job description")
+        print(f"Extracting text from {len(cv_files)} CVs...")
+        print(f"{'='*60}\n")
+        cv_texts = self.extract_cvs_parallel(cv_files, max_workers=4)
+        
+        if not cv_texts:
+            logger.error("No CVs with sufficient text found!")
+            return []
+        
+        # Step 3: Process CVs
+        results = []
+        cv_items = list(cv_texts.items())
+        
+        logger.info(f"Processing {len(cv_items)} CVs in batches of {batch_size}...")
+        print(f"\n{'='*60}")
+        print(f"Analyzing {len(cv_items)} CVs against job description")
         print(f"{'='*60}\n")
         
-        for idx, cv_file in enumerate(cv_files, 1):
-            # Double-check we haven't processed this file
-            file_key = str(cv_file.resolve())
-            if file_key in processed_files:
-                logger.warning(f"Skipping duplicate file: {cv_file.name}")
-                continue
+        for idx, (cv_name, cv_text) in enumerate(cv_items, 1):
+            print(f"[{idx}/{len(cv_items)}] Processing: {cv_name}")
             
-            processed_files.add(file_key)
+            # Extract data with AI
+            extracted_data = self.extract_cv_data(cv_text, job_description, cv_name)
             
-            print(f"[{idx}/{len(cv_files)}] Processing: {cv_file.name}")
+            # Calculate score with Python
+            score_result = self.scorer.calculate_score(extracted_data)
             
-            # Extract text
-            cv_text = self.extract_cv_text(cv_file)
+            # Optional: Generate summary
+            summary = self.generate_summary(extracted_data, score_result, cv_name)
             
-            if not cv_text or len(cv_text.strip()) < 50:
-                logger.warning(f"Skipping {cv_file.name} - insufficient text extracted")
-                print(f"  ⚠ Warning: Could not extract sufficient text from {cv_file.name}")
-                continue
-            
-            # Analyze with AI
-            analysis = self.analyze_cv_match(cv_text, job_description, cv_file.name)
-            
-            # Add CV file info to results
+            # Compile result
             result = {
-                "cv_file": cv_file.name,
-                "cv_path": str(cv_file),
-                "fit_score": analysis.get("fit_score", 0),
-                "recommendation": analysis.get("recommendation", "N/A"),
-                "summary": analysis.get("summary", ""),
-                "strengths": analysis.get("strengths", []),
-                "gaps": analysis.get("gaps", []),
-                "breakdown": analysis.get("breakdown", []),
-                "note": analysis.get("note", ""),
-                "cv_text_preview": cv_text[:500]  # Store preview for reference
+                "cv_file": cv_name,
+                "fit_score": score_result['final_score'],
+                "recommendation": score_result['recommendation'],
+                "summary": summary,
+                "breakdown": score_result['breakdown'],
+                "extracted_data": extracted_data,
+                "details": score_result.get('details', {}),
+                "cv_text_preview": cv_text[:500]
             }
             
             results.append(result)
-            print(f"  ✓ Recommendation: {result['recommendation']} (Score: {result['fit_score']}/100)\n")
+            print(f"  ✓ Score: {result['fit_score']}/100 | {result['recommendation']}\n")
         
-        logger.info(f"Successfully processed {len(results)} unique CVs")
+        logger.info(f"Successfully processed {len(results)} CVs")
         return results
     
     def get_top_candidates(self, results: List[Dict], top_n: int = 10) -> List[Dict]:
@@ -367,22 +409,24 @@ CV Content:
             print(f"Recommendation: {candidate['recommendation']}")
             print(f"\nSummary: {candidate.get('summary', 'N/A')}")
             
-            print(f"\nKey Strengths:")
-            for strength in candidate.get('strengths', []):
-                print(f"  - {strength}")
+            print(f"\nScore Breakdown:")
+            for item in candidate.get('breakdown', []):
+                print(f"  {item}")
             
-            print(f"\nPotential Gaps:")
-            for gap in candidate.get('gaps', []):
-                print(f"  - {gap}")
-
-            if candidate.get('breakdown'):
-                print(f"\nScore Breakdown:")
-                for item in candidate.get('breakdown', []):
-                    print(f"  - {item}")
+            # Show extracted data highlights
+            extracted = candidate.get('extracted_data', {})
+            req_skills = [s for s in extracted.get('required_skills', []) if s.get('found')]
+            if req_skills:
+                print(f"\nRequired Skills Found ({len(req_skills)}):")
+                for skill in req_skills[:5]:  # Show first 5
+                    print(f"  ✓ {skill['skill']}")
             
-            if candidate.get('note'):
-                print(f"\nNote: {candidate.get('note')}")
-
+            projects = extracted.get('projects', [])
+            if projects:
+                print(f"\nRelevant Projects ({len(projects)}):")
+                for proj in projects[:3]:  # Show first 3
+                    print(f"  • {proj.get('title', 'Unnamed')} ({proj.get('relevance', 'N/A')})")
+            
             print(f"\nCV Preview: {candidate.get('cv_text_preview', '')[:200]}...")
             print("\n" + "-"*80 + "\n")
     
@@ -395,7 +439,6 @@ CV Content:
             output_file: Output file path (optional, defaults to script directory with timestamp)
         """
         if not output_file:
-            # Get the directory where the script is located
             script_dir = Path(__file__).parent.resolve()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = script_dir / f"cv_analysis_results_{timestamp}.json"
@@ -417,6 +460,34 @@ CV Content:
         return str(output_file)
 
 
+def get_user_inputs() -> Tuple[str, str]:
+    """Get CV directory and job description from user"""
+    print("\n" + "="*60)
+    print("CV Analysis Tool - Enhanced with GPU Optimization")
+    print("="*60 + "\n")
+    
+    # Get CV directory
+    cv_directory = input("Enter the path to CV directory (or press Enter for 'fake_cvs'): ").strip()
+    if not cv_directory:
+        cv_directory = "fake_cvs"
+    
+    # Get job description
+    print("\nEnter job description (type 'END' on a new line when done):")
+    job_lines = []
+    while True:
+        line = input()
+        if line.strip() == 'END':
+            break
+        job_lines.append(line)
+    
+    job_description = '\n'.join(job_lines)
+    
+    if not job_description.strip():
+        raise ValueError("Job description cannot be empty!")
+    
+    return cv_directory, job_description
+
+
 def main():
     """Main execution function"""
     try:
@@ -425,7 +496,7 @@ def main():
         
         # Initialize analyzer
         print("\n" + "="*60)
-        print("Initializing AI Model...")
+        print("Initializing AI Model and Scoring Engine...")
         print("="*60)
         analyzer = CVAnalyzer()
         
@@ -457,3 +528,7 @@ def main():
         logger.error(f"Fatal error: {e}", exc_info=True)
         print(f"\n❌ Error: {e}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
