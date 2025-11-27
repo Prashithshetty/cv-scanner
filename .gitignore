@@ -1,6 +1,6 @@
 # Model files
 model/
-
+generated_cvs/
 # Python cache
 __pycache__/
 *.pyc
